@@ -52,6 +52,8 @@ class Walk(Node):
         if walls[1]:
             right_dist = min(lzr_right)
 
+        print(walls, right_dist)
+
         return walls, right_dist
 
     # PID Controller for wall following
