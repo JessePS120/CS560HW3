@@ -39,7 +39,7 @@ class Walk(Node):
     
     #Returns a boolean array ([Left, Right, Front], right_dist) where 1 indicates a wall 
     #and 0 indicates nothing and dist is the distance from the wall on the right. 
-    def find_wall(self, lzr_msg):
+    def find_walls(self, lzr_msg):
         cone_dif = self.lzr_cone_size // 2
         lzr_dist = np.array(lzr_msg.ranges)
         mid = len(lzr_dist) // 2
