@@ -25,6 +25,27 @@ class Walk(Node):
         self.left_right_threshold = 1.5
         self.lzr_cone_size = 30
 
+        # PID Controller initialization
+        # Tips for Tuning:
+            # Increase Kp until there is a good response to the wall from the robot, there may be some oscillation
+            # Reduce Kp by 50% for stability after that
+            # Then, start with small values of Ki (<0.1) and increase until there is no steady-state error
+            # If there is overshoot, reduce Ki by 50%
+            # Then, start with small values for Kd (<0.5) and increase until the oscillations are dampened
+            # If it seems sluggish, reduce Kp by 50%
+        self.target_distance = 0.5  # Target distance from wall (meters)
+        self.Kp = 2.0  # Proportional gain
+        self.Ki = 0.1  # Integral gain  
+        self.Kd = 0.5  # Derivative gain
+        # PID state variables
+        self.prev_error = 0.0
+        self.integral = 0.0
+        self.prev_time = time.time()
+        # Angular velocity limits
+        self.max_angular_vel = 1.0  # Maximum angular velocity (rad/s)
+        # Anti-windup integral limit:
+        self.integral_limit = 2.0
+
     def move(self, x, z): 
         twist = Twist() 
         twist.x.velocity = x 
