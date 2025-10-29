@@ -21,6 +21,9 @@ class Walk(Node):
             self.sensor_callback, 
             10
         )
+        self.target_distance = .2
+        self.left_right_threshold = 1.5
+        self.lzr_cone_size = 30
 
     def move(self, x, z): 
         twist = Twist() 
@@ -34,9 +37,22 @@ class Walk(Node):
     def turn_ccw(self, time): 
         return 
     
-    def find_walls(self, msg): 
-        #([Left, Right, Front], dist) 
-        return ([0, 0, 0], 0) 
+    #Returns a boolean array ([Left, Right, Front], right_dist) where 1 indicates a wall 
+    #and 0 indicates nothing and dist is the distance from the wall on the right. 
+    def find_wall(self, lzr_msg):
+        cone_dif = self.lzr_cone_size // 2
+        lzr_dist = np.array(lzr_msg.ranges)
+        mid = len(lzr_dist) // 2
+        lzr_front = lzr_dist[mid-cone_dif:mid+cone_dif]
+        lzr_left = lzr_dist[0:cone_dif]
+        lzr_right = lzr_dist[len(lzr_dist)-cone_dif-1:len(lzr_dist)-1]
+
+        walls = [min(lzr_left)<self.left_right_threshold, min(lzr_right)<self.left_right_threshold, min(lzr_front)<self.target_distance]
+        right_dist = 5
+        if walls[1]:
+            right_dist = min(lzr_right)
+
+        return walls, right_dist
 
     # PID Controller for wall following
     # Input: error - distance from target wall on the right side (meters)
