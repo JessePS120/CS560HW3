@@ -8,7 +8,7 @@ from enum import Enum
 import numpy as np 
 import random 
 
-robot_velocity = 1 
+robot_velocity = 0.5
 
 class Walk(Node):
     def __init__(self):
@@ -21,9 +21,10 @@ class Walk(Node):
             self.sensor_callback, 
             10
         )
-        self.target_distance = .2
+        self.target_distance = 0.15
         self.left_right_threshold = 1.5
-        self.lzr_cone_size = 30
+        self.lzr_cone_size = 55
+        self.front_cone_size = 30
 
         # PID Controller initialization
         # Tips for Tuning:
@@ -33,7 +34,7 @@ class Walk(Node):
             # If there is overshoot, reduce Ki by 50%
             # Then, start with small values for Kd (<0.5) and increase until the oscillations are dampened
             # If it seems sluggish, reduce Kp by 50%
-        self.target_distance = 0.5  # Target distance from wall (meters)
+        self.target_distance = 0.3  # Target distance from wall (meters)
         self.Kp = 2.0  # Proportional gain
         self.Ki = 0.1  # Integral gain  
         self.Kd = 0.5  # Derivative gain
@@ -42,31 +43,40 @@ class Walk(Node):
         self.integral = 0.0
         self.prev_time = time.time()
         # Angular velocity limits
-        self.max_angular_vel = 1.0  # Maximum angular velocity (rad/s)
+        self.max_angular_vel = 0.3 # Maximum angular velocity (rad/s)
         # Anti-windup integral limit:
         self.integral_limit = 2.0
 
     def move(self, x, z): 
         twist = Twist() 
-        twist.x.velocity = x 
-        twist.z.velocity = z 
-        self.publish(twist) 
+        twist.linear.x = float(x) 
+        twist.angular.z = float(z) 
+        self.publisher.publish(twist) 
 
-    def turn_cw(self, time): 
-        return 
+    def turn_cw(self, time_len): 
+        # start_time = time.time()
+        # while time.time()-start_time < time_len:
+        #     self.move(0, -(math.pi/2 / time_len))
+        self.move(.05, -100)
     
-    def turn_ccw(self, time): 
-        return 
+    def turn_ccw(self, time_len): 
+        # start_time = time.time()
+        # while time.time()-start_time < time_len:
+        #     self.move(0, (math.pi/2 / time_len))
+        self.move(.05, 100)
     
     #Returns a boolean array ([Left, Right, Front], right_dist) where 1 indicates a wall 
     #and 0 indicates nothing and dist is the distance from the wall on the right. 
     def find_walls(self, lzr_msg):
         cone_dif = self.lzr_cone_size // 2
+        front_cone_dif = self.front_cone_size // 2
         lzr_dist = np.array(lzr_msg.ranges)
         mid = len(lzr_dist) // 2
-        lzr_front = lzr_dist[mid-cone_dif:mid+cone_dif]
+        lzr_front = lzr_dist[mid-front_cone_dif:mid+front_cone_dif]
         lzr_left = lzr_dist[0:cone_dif]
         lzr_right = lzr_dist[len(lzr_dist)-cone_dif-1:len(lzr_dist)-1]
+
+        print(min(lzr_left), min(lzr_right), min(lzr_front))
 
         walls = [min(lzr_left)<self.left_right_threshold, min(lzr_right)<self.left_right_threshold, min(lzr_front)<self.target_distance]
         right_dist = 5
@@ -80,7 +90,7 @@ class Walk(Node):
     # PID Controller for wall following
     # Input: error - distance from target wall on the right side (meters)
     # Output: angular velocity (rad/s) to adjust robot position
-    def pid(self, error):
+    def pid(self, dist):
         # Calculate time step
         current_time = time.time()
         dt = current_time - self.prev_time
@@ -91,7 +101,7 @@ class Walk(Node):
             
         # Calculate error from target distance
         # Positive error means too far from wall, negative means too close
-        distance_error = error - self.target_distance
+        distance_error = dist - self.target_distance
         
         # Proportional term: immediate response to current error
         proportional = self.Kp * distance_error
@@ -129,7 +139,7 @@ class Walk(Node):
         # Debug output (optional - remove in production)
         print(f"PID Debug - Error: {distance_error:.3f}, P: {proportional:.3f}, I: {integral_term:.3f}, D: {derivative_term:.3f}, Output: {angular_velocity:.3f}")
         
-        return angular_velocity
+        return angular_velocity * -1.0
     
     def sensor_callback(self, msg): 
         #TODO: Consider adding a timeout if not right wall has been found that causes the robot to move randomly. 
@@ -156,3 +166,45 @@ def main(args=None):
     
 if __name__ == '__main__':
     main()
+
+
+
+''''''
+#                                                    ___
+#                                               ,----'   `-,
+#                      ___,-'~~~`---'~~~~`-----' ,-'        \,
+#              ___,---'          '        ,-~~~~~            :
+#         _,--'                 ,        ; ;       ) "   __   \,
+#    _,--'     ,                 ,'      :: "  ;  ` ,'  (\o\)  |
+#   / _,       `,                     ,  `; " ;    (     `~~ `'\
+#  ; /         ,`               ,     `    ~~~`. " ;   _     ,  `.
+# ,'/          ` ,              `     ` ,  ,    \_/ ?   ;    )   `.
+# :;:            `                      `  ` ,     uu`--(___(    ~:
+# :::          , ,  ,            ,   ;     , `  ,-'      \~(  ~   :
+# ||:          ` `  `         ,  ` ,'    ( ` _,-          \ \_   ~:
+# :|`.        , ,  ,          `_   ;       ) );            \__>   :
+# |:  : ;     ` `  ` ;  __,--~~ `-(         ( |              `.  ~|
+# :|  :         ` __,--'           :  ()    : :               |~  ;
+# |;  |  `     ,-'    ;             :  )(   | `.         /(   `. ~|
+# ::  :   ~  _/;     ;               |   )  :  :        ; /    ;~ ;
+# {}  ;     /  :   ~ :               :      ; ,;        : `._,-  ,
+# {} /~    /   ;    ;                 : ,  |  `;         `.___,-'
+#   ;~    ;    ;  ~ `.                | `  )   ;
+#   :`    \    `;~   \                ;~   `-, `-.     Targon
+#   `.__OOO;    `;_OOO;               )_____OO;_(O)
+#    ~~~~~~       ~~~~                ~~~~~~~~ ~~~~ ''''''
+
+#        ,,,,,,,,,,,,,,,
+#     ,(((((((((())))))))),
+#   ,((((((((((()))))))))))),
+#  ,(((((((((\\\|///))))))))),
+# ,((((((((((///|\\\)))))))))),
+# ((((((((//////^\\\\\\))))))))
+# ((((((' .-""-   -""-. '))))))
+# (((((  `\.-.     .-./`  )))))
+# ((((( -=(0) )   (0) )=- )))))
+# '((((   /'-'     '-'\   ))))'
+#  ((((\   _,   A  ,_    /))))
+#  '((((\    \     /    /))))'
+#    '((('.   `-o-'   .')))'
+# jgs      '-.,___,.-'
