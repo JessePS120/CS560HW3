@@ -35,6 +35,27 @@ class Walk(Node):
             10
         )
 
+        # PID Controller initialization
+        # Tips for Tuning:
+            # Increase Kp until there is a good response to the wall from the robot, there may be some oscillation
+            # Reduce Kp by 50% for stability after that
+            # Then, start with small values of Ki (<0.1) and increase until there is no steady-state error
+            # If there is overshoot, reduce Ki by 50%
+            # Then, start with small values for Kd (<0.5) and increase until the oscillations are dampened
+            # If it seems sluggish, reduce Kp by 50%
+        self.target_distance = 0.5  # Target distance from wall (meters)
+        self.Kp = 2.0  # Proportional gain
+        self.Ki = 0.1  # Integral gain  
+        self.Kd = 0.5  # Derivative gain
+        # PID state variables
+        self.prev_error = 0.0
+        self.integral = 0.0
+        self.prev_time = time.time()
+        # Angular velocity limits
+        self.max_angular_vel = 1.0  # Maximum angular velocity (rad/s)
+        # Anti-windup integral limit:
+        self.integral_limit = 2.0
+
     def find_door(self, laser_data, force_spin):
         #The number of seconds between each spin. 
         spin_rate = 5  
@@ -103,6 +124,60 @@ class Walk(Node):
             twist.angular.z = 0.0  
             self.publisher.publish(twist)
             #End Debugging 
+    
+    # PID Controller for wall following
+    # Input: error - distance from target wall on the right side (meters)
+    # Output: angular velocity (rad/s) to adjust robot position
+    def pid(self, error):
+        # Calculate time step
+        current_time = time.time()
+        dt = current_time - self.prev_time
+        
+        # Avoid division by zero on first call
+        if dt == 0:
+            dt = 0.01
+            
+        # Calculate error from target distance
+        # Positive error means too far from wall, negative means too close
+        distance_error = error - self.target_distance
+        
+        # Proportional term: immediate response to current error
+        proportional = self.Kp * distance_error
+        
+        # Integral term: accumulates error over time to eliminate steady-state error
+        self.integral += distance_error * dt
+        
+        # Prevent integral windup by limiting the integral term
+        integral_limit = self.integral_limit
+        if self.integral > integral_limit:
+            self.integral = integral_limit
+        elif self.integral < -integral_limit:
+            self.integral = -integral_limit
+            
+        integral_term = self.Ki * self.integral
+        
+        # Derivative term: rate of change of error (damping)
+        derivative = (distance_error - self.prev_error) / dt
+        derivative_term = self.Kd * derivative
+        
+        # Calculate PID output (angular velocity)
+        # We will need to tune this because the error does not map directly to the angular velocity. We may need to limit the max angular velocity or scale it up/down.
+        angular_velocity = proportional + integral_term + derivative_term
+        
+        # Limit angular velocity to prevent excessive turning
+        if angular_velocity > self.max_angular_vel:
+            angular_velocity = self.max_angular_vel
+        elif angular_velocity < -self.max_angular_vel:
+            angular_velocity = -self.max_angular_vel
+        
+        # Update state variables for next iteration
+        self.prev_error = distance_error
+        self.prev_time = current_time
+        
+        # Debug output (optional - remove in production)
+        print(f"PID Debug - Error: {distance_error:.3f}, P: {proportional:.3f}, I: {integral_term:.3f}, D: {derivative_term:.3f}, Output: {angular_velocity:.3f}")
+        
+        return angular_velocity
     
     def sensor_callback(self, msg): 
         if STATE == Robot_State.SCAN: 
