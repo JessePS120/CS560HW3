@@ -8,10 +8,8 @@ from enum import Enum
 import numpy as np 
 import random 
 
-#Spin rate of the robot. 
-robot_spin_velo = 0.5
-robot_forward_speed = 1 
-sleep_time = 1 
+# Wider front cone, but shorter distance
+
 
 class Walk(Node):
     
@@ -25,49 +23,161 @@ class Walk(Node):
             self.sensor_callback, 
             10
         )
-    
-    def send(self, x=0, z=0):
+
+        self.mode = "FULL"
+        self.front_cone_span = 40
+        
+    # Scan the front 180 degrees of lidar range and calculate angular velocity needed to go in the direction of more openness
+    def scan_area(self, laser_data):
+        # Get the front 180 degrees of lidar range
+        laser_ranges = np.array(laser_data.ranges)
+        middle_index = len(laser_ranges) // 2
+        start_index = middle_index - 90
+        end_index = middle_index + 90
+        lidar_front_180 = laser_ranges[start_index:end_index]
+        
+        # Check if we can go straight through a 20-degree cone
+        cone_clear = self.check_front_cone_clear(laser_ranges, middle_index)
+        
+        if cone_clear:
+            # Use 20-degree cone for fine adjustments
+            self.mode = "CONE"
+            print("Cone")
+            angular_velocity, linear_velocity = self.calculate_cone_velocity(laser_ranges, middle_index, lidar_front_180)
+        else:
+            # Use 180-degree bias for obstacle avoidance
+            self.mode = "FULL"
+            angular_velocity, linear_velocity = self.calculate_180_degree_velocity(lidar_front_180)
+        
+        return angular_velocity, linear_velocity
+        
+    def check_front_cone_clear(self, laser_ranges, middle_index):
+        # Check 20-degree cone in the center (10 degrees on each side)
+        cone_start = middle_index - self.front_cone_span // 2
+        cone_end = middle_index + self.front_cone_span // 2
+        cone_data = laser_ranges[cone_start:cone_end]
+        
+        # Check if there's clear space (2 meters) in the front cone
+        clear_distance = 1.0  # meters
+
+        # Check if the majority of lidar points in cone are clear
+        clear_points = 0
+        for i in range(len(cone_data)):
+            if cone_data[i] > clear_distance:
+                clear_points = clear_points + 1
+
+        # Return True if there's at least one clear path (2+ meters) in the cone
+        # This allows us to detect doors even if part of the cone faces a wall
+        print(f"Clear Points: {clear_points} Total Points: {len(cone_data)}")
+        return clear_points > 35
+
+    def calculate_180_degree_velocity(self, front_180_data):
+        # Split the 180 degrees into left and right halves
+        left_half = front_180_data[:90]    # First 90 measurements (left side)
+        right_half = front_180_data[90:]   # Last 90 measurements (right side)
+        
+        # Calculate average distance for each half (more distance = more openness)
+        left_openness = np.mean(left_half)
+        right_openness = np.mean(right_half)
+        
+        # Calculate bias: positive means turn right, negative means turn left
+        bias = right_openness - left_openness + 0.7 # Offset to turn right more
+        
+        # Angular velocity calculation
+        max_angular_vel = 1.0  # Maximum angular velocity
+        scale_factor = 1.0      # How sensitive the turning is
+        angular_velocity = bias * scale_factor
+        
+        # Limit the angular velocity to prevent excessive turning
+        if angular_velocity > max_angular_vel:
+            angular_velocity = max_angular_vel
+        elif angular_velocity < -max_angular_vel:
+            angular_velocity = -max_angular_vel
+        
+        # Linear velocity calculation based on overall openness
+        min_distance = np.min(front_180_data)
+        
+        # Base linear velocity
+        base_linear_vel = 0.8  # Base speed for 180-degree mode
+        
+        # Adjust speed based on obstacles
+        if min_distance < 0.3:
+            linear_velocity = 0.0  # Stop if too close to obstacles
+        elif min_distance < 1.0:
+            linear_velocity = 0.2  # Very slow when close
+        elif min_distance < 2.0:
+            linear_velocity = 0.5  # Moderate speed
+        else:
+            linear_velocity = base_linear_vel  # Full speed when clear
+            
+        return angular_velocity, linear_velocity
+        
+    def calculate_cone_velocity(self, laser_ranges, middle_index, lidar_front_180):
+        # In the cone mode, the 180 degree mode should still be taken into account but not hold as much weight 
+        # Get 20-degree cone data (10 degrees on each side of center)
+        cone_start = middle_index - self.front_cone_span // 2
+        cone_end = middle_index + self.front_cone_span // 2
+        cone_data = laser_ranges[cone_start:cone_end]
+        
+        # Split cone into left and right halves (5 measurements each)
+        left_cone = cone_data[:(self.front_cone_span // 2)]    # Left 5 degrees of cone
+        right_cone = cone_data[(self.front_cone_span // 2):]   # Right 5 degrees of cone
+        
+        # Calculate average distance for each half
+        left_openness = np.mean(left_cone)
+        right_openness = np.mean(right_cone)
+        
+        # Calculate bias for fine adjustments
+        bias = right_openness - left_openness
+        
+        # Angular velocity calculation (fine adjustments)
+        max_angular_vel = 0.2  # Much smaller than 180-degree version
+        scale_factor = 0.1     # Much more gentle for fine adjustments
+        angular_velocity = bias * scale_factor
+        
+        # Limit the angular velocity for fine adjustments
+        if angular_velocity > max_angular_vel:
+            angular_velocity = max_angular_vel
+        elif angular_velocity < -max_angular_vel:
+            angular_velocity = -max_angular_vel
+        
+        # Linear velocity calculation based on cone openness
+        # Use the minimum distance in cone to determine how fast to go
+        min_distance_in_cone = np.min(cone_data)
+        
+        # Base linear velocity
+        base_linear_vel = 0.5  # Base speed when cone is clear
+        
+        # Slow down as we get closer to obstacles
+        if min_distance_in_cone < 1.0:
+            linear_velocity = 0.1  # Very slow when close to obstacles
+        elif min_distance_in_cone < 2.0:
+            linear_velocity = 0.3  # Moderate speed when approaching obstacles
+        else:
+            linear_velocity = base_linear_vel  # Full speed when clear
+        
+        # Calculate 180 degree angular and linear velocity, but dont hold as much weight
+        angular_velocity_180, linear_velocity_180 = self.calculate_180_degree_velocity(lidar_front_180)
+
+        final_linear_velocity = (linear_velocity_180 * 0.2) + (linear_velocity * 1.0)
+        final_angular_velocity = (angular_velocity_180 * 0.2) + (angular_velocity * 1.0)
+            
+        return final_angular_velocity, final_linear_velocity
+
+    def sensor_callback(self, msg):
+        # Get lidar data and calculate velocities using our scan_area function
+        angular_velocity, linear_velocity = self.scan_area(msg)
+        
+        # Create and send twist command
         twist_msg = Twist()
-        twist_msg.linear.x = float(x)  
-        twist_msg.angular.z = float(z)   
+        twist_msg.linear.x = linear_velocity
+        twist_msg.angular.z = angular_velocity
+        
+        # Publish the twist command
         self.publisher.publish(twist_msg)
-
-    def stop(self): 
-        self.send(0,0)
-        time.sleep(sleep_time) #stop for 1 second
-
-    def rotate_CW(self, time=0):
-        time_start = time.time() 
-        while(time.time() < time_start + time): 
-            self.send(0,-robot_spin_velo)
-            print("Rotate CW")
-        time.sleep(sleep_time) 
-
-    def rotate_CCW(self, time=0):
-        time_start = time.time()
-        while(time.time() < time_start + time):
-            self.send(0,robot_spin_velo)
-            print("Rotate CCW")
-        time.sleep(sleep_time)
-
-    #Just in case we need it. 
-    def move_backward(self): 
-
-    #Returns a boolean array ([Left, Right, Front], right_dist) where 1 indicates a wall 
-    #and 0 indicates nothing and dist is the distance from the wall on the right. 
-    def find_wall(self):
-
-
-    #Error = Smallest Robot distance from wall that we are tracking(right wall). 
-    # Error is the distance from the wall. We want to get as close to the wall on the right side as possible.
-    # Output angular velocity 
-    def pid(self, error): 
-        integral += error * dt
-        derivative = (error - prev_error) / dt
-        output = Kp * error + Ki * integral + Kd * derivative
-        prev_error = error
-
-    def sensor_callback(self, msg): 
+        
+        # Optional: Print debug information
+        # print(f"Mode: {self.mode} \t | \t Linear: {linear_velocity:.2f} \t | \t Angular: {angular_velocity:.2f} \t | \t Time: {time.time() - self.startTime:.2f}")
 
 def main(args=None):
     rclpy.init(args=args)
@@ -78,71 +188,3 @@ def main(args=None):
     
 if __name__ == '__main__':
     main()
-
-
-
-
-
-'''
-if force_spin or (time.time() - self.last_spin_complete > spin_rate): 
-            if not self.spinning: 
-                self.random_spin = random.choice([-1, 1]) 
-                self.spinning = True 
-                self.time_spinning = time.time() 
-            
-            #For Debugging 
-            twist = Twist() 
-            twist.linear.x = 0.0 
-            twist.angular.z = self.random_spin * robot_spin_velo  
-            self.publisher.publish(twist)
-            #End Debugging 
-
-            #Convert lidar data into a more usable form(np arrays) 
-            laser_ranges = np.array(laser_data.ranges)
-            angles = laser_data.angle_min + np.arange(len(laser_ranges)) * laser_data.angle_increment
-            #Masking data so that we only use the lidar directly in front of the robot. 
-            half_cone = np.deg2rad(30)
-            mask = (angles >= -half_cone) & (angles <= half_cone)
-            laser_ranges = laser_ranges[mask]
-            angles = angles[mask]
-            #Calculating the difference array. 
-            range_difference = np.diff(laser_ranges) 
-            #Detect any "edges"(where there is a large enough range difference for there to be a door) 
-            edges = np.where(np.abs(range_difference) > edge)[0] 
-
-
-            for i in range(len(edges) - 1): 
-                left_index = edges[i] 
-                right_index = edges[i + 1] 
-                middle_index = (left_index + right_index) // 2 
-
-                #Check if there is an open space between the two edges of the doorway. 
-                if laser_ranges[middle_index] > max(laser_ranges[left_index], laser_ranges[right_index]) and (abs(laser_ranges[left_index] - laser_ranges[right_index]) <= max_offset): 
-                    left_x = laser_ranges[left_index] * math.cos(angles[left_index])
-                    left_y = laser_ranges[left_index] * math.sin(angles[left_index])
-                    right_x = laser_ranges[right_index] * math.cos(angles[right_index]) 
-                    right_y = laser_ranges[right_index] * math.sin(angles[right_index]) 
-                    door_width = math.sqrt((left_x - right_x )**2 + (left_y - right_y)**2)
-
-                    if min_door_width <= door_width <= max_door_width: 
-                        print("Door Found At", laser_ranges[middle_index] * math.cos(angles[middle_index]), laser_ranges[middle_index] * math.sin(angles[middle_index]))
-                        door_found = True 
-
-        #Spin has been completed 
-        if time.time() - self.time_spinning >= spin_time or door_found: 
-            global STATE 
-            STATE = Robot_State.DRIVE 
-            self.last_spin_complete = time.time() 
-            self.spinning = False 
-
-            #For Debugging 
-            twist = Twist() 
-            twist.linear.x = 0.0  
-            twist.angular.z = 0.0  
-            self.publisher.publish(twist)
-            #End Debugging 
-    
-    def sensor_callback(self, msg): 
-        if STATE == Robot_State.SCAN: 
-            self.find_door(msg, False)
-'''  
