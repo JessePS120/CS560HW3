@@ -7,12 +7,14 @@ from sensor_msgs.msg import LaserScan
 from enum import Enum 
 import numpy as np 
 import random 
+from nav_msgs.msg import Odometry
 
-robot_velocity = 0.5
 
 class Walk(Node):
+    
     def __init__(self):
         super().__init__('Track')
+        self.isStart = False 
         self.startTime = time.time()
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.subscription = self.create_subscription( 
@@ -21,141 +23,173 @@ class Walk(Node):
             self.sensor_callback, 
             10
         )
-        self.target_distance = 0.15
-        self.left_right_threshold = 1.5
-        self.lzr_cone_size = 55
-        self.front_cone_size = 30
+        self.subscription = self.create_subscription(
+            Odometry,
+            '/ground_truth',
+            self.listener_callback,
+        10)
 
-        # PID Controller initialization
-        # Tips for Tuning:
-            # Increase Kp until there is a good response to the wall from the robot, there may be some oscillation
-            # Reduce Kp by 50% for stability after that
-            # Then, start with small values of Ki (<0.1) and increase until there is no steady-state error
-            # If there is overshoot, reduce Ki by 50%
-            # Then, start with small values for Kd (<0.5) and increase until the oscillations are dampened
-            # If it seems sluggish, reduce Kp by 50%
-        self.target_distance = 0.3  # Target distance from wall (meters)
-        self.Kp = 2.0  # Proportional gain
-        self.Ki = 0.1  # Integral gain  
-        self.Kd = 0.5  # Derivative gain
-        # PID state variables
-        self.prev_error = 0.0
-        self.integral = 0.0
-        self.prev_time = time.time()
-        # Angular velocity limits
-        self.max_angular_vel = 0.3 # Maximum angular velocity (rad/s)
-        # Anti-windup integral limit:
-        self.integral_limit = 2.0
+        self.mode = "FULL"
 
-    def move(self, x, z): 
-        twist = Twist() 
-        twist.linear.x = float(x) 
-        twist.angular.z = float(z) 
-        self.publisher.publish(twist) 
+    def listener_callback(self, msg):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
 
-    def turn_cw(self, time_len): 
-        # start_time = time.time()
-        # while time.time()-start_time < time_len:
-        #     self.move(0, -(math.pi/2 / time_len))
-        self.move(.05, -100)
-    
-    def turn_ccw(self, time_len): 
-        # start_time = time.time()
-        # while time.time()-start_time < time_len:
-        #     self.move(0, (math.pi/2 / time_len))
-        self.move(.05, 100)
-    
-    #Returns a boolean array ([Left, Right, Front], right_dist) where 1 indicates a wall 
-    #and 0 indicates nothing and dist is the distance from the wall on the right. 
-    def find_walls(self, lzr_msg):
-        cone_dif = self.lzr_cone_size // 2
-        front_cone_dif = self.front_cone_size // 2
-        lzr_dist = np.array(lzr_msg.ranges)
-        mid = len(lzr_dist) // 2
-        lzr_front = lzr_dist[mid-front_cone_dif:mid+front_cone_dif]
-        lzr_left = lzr_dist[0:cone_dif]
-        lzr_right = lzr_dist[len(lzr_dist)-cone_dif-1:len(lzr_dist)-1]
+        if self.isStart == False:
+            self.startPos = [x, y]
+            self.isStart = True
 
-        print(min(lzr_left), min(lzr_right), min(lzr_front))
+        dx = x - self.startPos[0]
+        dy = y - self.startPos[1]
+        distanceTraveled = math.sqrt(dx * dx + dy * dy)
 
-        walls = [min(lzr_left)<self.left_right_threshold, min(lzr_right)<self.left_right_threshold, min(lzr_front)<self.target_distance]
-        right_dist = 5
-        if walls[1]:
-            right_dist = min(lzr_right)
+        curTime = time.time()
+        elapsed = curTime - self.startTime
 
-        print(walls, right_dist)
-
-        return walls, right_dist
-
-    # PID Controller for wall following
-    # Input: error - distance from target wall on the right side (meters)
-    # Output: angular velocity (rad/s) to adjust robot position
-    def pid(self, dist):
-        # Calculate time step
-        current_time = time.time()
-        dt = current_time - self.prev_time
+        print("Elapsed Time: " + str(elapsed))
+        print("Distance: " + str(distanceTraveled))
         
-        # Avoid division by zero on first call
-        if dt == 0:
-            dt = 0.01
+    # Scan the front 180 degrees of lidar range and calculate angular velocity needed to go in the direction of more openness
+    def scan_area(self, laser_data):
+        # Get the front 180 degrees of lidar range
+        laser_ranges = np.array(laser_data.ranges)
+        middle_index = len(laser_ranges) // 2
+        start_index = middle_index - 90
+        end_index = middle_index + 90
+        lidar_front_180 = laser_ranges[start_index:end_index]
+        
+        # Check if we can go straight through a 20-degree cone
+        cone_clear = self.check_front_cone_clear(laser_ranges, middle_index)
+        
+        if cone_clear:
+            # Use 20-degree cone for fine adjustments
+            self.mode = "CONE"
+            angular_velocity, linear_velocity = self.calculate_cone_velocity(laser_ranges, middle_index)
+        else:
+            # Use 180-degree bias for obstacle avoidance
+            self.mode = "FULL"
+            angular_velocity, linear_velocity = self.calculate_180_degree_velocity(lidar_front_180)
+        
+        return angular_velocity, linear_velocity
+        
+    def check_front_cone_clear(self, laser_ranges, middle_index):
+        # Check 20-degree cone in the center (10 degrees on each side)
+        cone_start = middle_index - 35
+        cone_end = middle_index + 35
+        cone_data = laser_ranges[cone_start:cone_end]
+        
+        # Check if there's clear space (2 meters) in the front cone
+        clear_distance = 2.0  # meters
+        max_distance_in_cone = np.mean(cone_data)
+        
+        # Return True if there's at least one clear path (2+ meters) in the cone
+        # This allows us to detect doors even if part of the cone faces a wall
+        return max_distance_in_cone > clear_distance
+        
+    def calculate_cone_velocity(self, laser_ranges, middle_index):
+        # Get 20-degree cone data (10 degrees on each side of center)
+        cone_start = middle_index - 45
+        cone_end = middle_index + 45
+        cone_data = laser_ranges[cone_start:cone_end]
+        
+        # Split cone into left and right halves (10 measurements each)
+        left_cone = cone_data[:45]    # Left 10 degrees of cone
+        right_cone = cone_data[45:]   # Right 10 degrees of cone
+        
+        # Calculate average distance for each half
+        left_openness = np.mean(left_cone)
+        right_openness = np.mean(right_cone)
+        
+        # Calculate bias for fine adjustments
+        bias = right_openness - left_openness
+        
+        # Angular velocity calculation (fine adjustments)
+        max_angular_vel = 0.4  # Much smaller than 180-degree version
+        scale_factor = 0.1     # Much more gentle for fine adjustments
+        if laser_ranges[cone_start] > 0.5 and laser_ranges[cone_end] > 0.5: 
+            angular_velocity = bias * random.betavariate(0.3, 0.3) 
+        else:  
+            angular_velocity = bias * scale_factor 
+        
+        # Limit the angular velocity for fine adjustments
+        if angular_velocity > max_angular_vel:
+            angular_velocity = max_angular_vel
+        elif angular_velocity < -max_angular_vel:
+            angular_velocity = -max_angular_vel
+        
+        # Linear velocity calculation based on cone openness
+        # Use the minimum distance in cone to determine how fast to go
+        min_distance_in_cone = np.min(cone_data)
+        
+        # Base linear velocity
+        base_linear_vel = 0.5  # Base speed when cone is clear
+        
+        # Slow down as we get closer to obstacles
+        if min_distance_in_cone < 1.0:
+            linear_velocity = 0.3  # Very slow when close to obstacles
+        elif min_distance_in_cone < 2.0:
+            linear_velocity = 0.5  # Moderate speed when approaching obstacles
+        else:
+            linear_velocity = base_linear_vel  # Full speed when clear
             
-        # Calculate error from target distance
-        # Positive error means too far from wall, negative means too close
-        distance_error = dist - self.target_distance
+        return angular_velocity, linear_velocity
         
-        # Proportional term: immediate response to current error
-        proportional = self.Kp * distance_error
+    def calculate_180_degree_velocity(self, front_180_data):
+        # Split the 180 degrees into left and right halves
+        left_half = front_180_data[:90]    # First 90 measurements (left side)
+        right_half = front_180_data[90:]   # Last 90 measurements (right side)
         
-        # Integral term: accumulates error over time to eliminate steady-state error
-        self.integral += distance_error * dt
+        # Calculate average distance for each half (more distance = more openness)
+        left_openness = np.mean(left_half)
+        right_openness = np.mean(right_half)
         
-        # Prevent integral windup by limiting the integral term
-        integral_limit = self.integral_limit
-        if self.integral > integral_limit:
-            self.integral = integral_limit
-        elif self.integral < -integral_limit:
-            self.integral = -integral_limit
+        # Calculate bias: positive means turn right, negative means turn left
+        bias = right_openness - left_openness
+        
+        # Angular velocity calculation
+        max_angular_vel = 1.0  # Maximum angular velocity
+        scale_factor = 0.5      # How sensitive the turning is
+        angular_velocity = bias * scale_factor
+        
+        # Limit the angular velocity to prevent excessive turning
+        if angular_velocity > max_angular_vel:
+            angular_velocity = max_angular_vel
+        elif angular_velocity < -max_angular_vel:
+            angular_velocity = -max_angular_vel
+        
+        # Linear velocity calculation based on overall openness
+        min_distance = np.min(front_180_data)
+        
+        # Base linear velocity
+        base_linear_vel = 0.8  # Base speed for 180-degree mode
+        
+        # Adjust speed based on obstacles
+        if min_distance < 0.4:
+            linear_velocity = 0.0  # Stop if too close to obstacles
+            angular_velocity = 1.0
+        elif min_distance < 1.0:
+            linear_velocity = 0.2  # Very slow when close
+        elif min_distance < 2.0:
+            linear_velocity = 0.5  # Moderate speed
+        else:
+            linear_velocity = base_linear_vel  # Full speed when clear
             
-        integral_term = self.Ki * self.integral
-        
-        # Derivative term: rate of change of error (damping)
-        derivative = (distance_error - self.prev_error) / dt
-        derivative_term = self.Kd * derivative
-        
-        # Calculate PID output (angular velocity)
-        # We will need to tune this because the error does not map directly to the angular velocity. We may need to limit the max angular velocity or scale it up/down.
-        angular_velocity = proportional + integral_term + derivative_term
-        
-        # Limit angular velocity to prevent excessive turning
-        if angular_velocity > self.max_angular_vel:
-            angular_velocity = self.max_angular_vel
-        elif angular_velocity < -self.max_angular_vel:
-            angular_velocity = -self.max_angular_vel
-        
-        # Update state variables for next iteration
-        self.prev_error = distance_error
-        self.prev_time = current_time
-        
-        # Debug output (optional - remove in production)
-        print(f"PID Debug - Error: {distance_error:.3f}, P: {proportional:.3f}, I: {integral_term:.3f}, D: {derivative_term:.3f}, Output: {angular_velocity:.3f}")
-        
-        return angular_velocity * -1.0
-    
-    def sensor_callback(self, msg): 
-        #TODO: Consider adding a timeout if not right wall has been found that causes the robot to move randomly. 
-        #TODO: We can escape islands by recording the movement pattern of the robot. if this pattern happens over and over again 
-        #we can use the left hand rule instead. 
-        walls, dist = self.find_walls(msg)
-        #No wall on the right and no wall in front. 
-        if walls[1] == 0 and walls[2] == 0: 
-            self.turn_cw(math.pi / 2 / robot_velocity)
-        #Wall in front of the robot
-        elif walls[2] == 1: 
-            self.turn_ccw(math.pi / 2 / robot_velocity)
-        #Right wall is present but no front wall. 
-        else: 
-            self.move(robot_velocity, self.pid(dist))
+        return angular_velocity, linear_velocity
 
+    def sensor_callback(self, msg):
+        # Get lidar data and calculate velocities using our scan_area function
+        angular_velocity, linear_velocity = self.scan_area(msg)
+        
+        # Create and send twist command
+        twist_msg = Twist()
+        twist_msg.linear.x = linear_velocity
+        twist_msg.angular.z = angular_velocity
+        
+        # Publish the twist command
+        self.publisher.publish(twist_msg)
+        
+        # Optional: Print debug information
+        print(f"Mode: {self.mode} \t | \t Linear: {linear_velocity:.2f} \t | \t Angular: {angular_velocity:.2f} \t | \t Time: {time.time() - self.startTime:.2f}")
 
 def main(args=None):
     rclpy.init(args=args)
@@ -166,45 +200,3 @@ def main(args=None):
     
 if __name__ == '__main__':
     main()
-
-
-
-''''''
-#                                                    ___
-#                                               ,----'   `-,
-#                      ___,-'~~~`---'~~~~`-----' ,-'        \,
-#              ___,---'          '        ,-~~~~~            :
-#         _,--'                 ,        ; ;       ) "   __   \,
-#    _,--'     ,                 ,'      :: "  ;  ` ,'  (\o\)  |
-#   / _,       `,                     ,  `; " ;    (     `~~ `'\
-#  ; /         ,`               ,     `    ~~~`. " ;   _     ,  `.
-# ,'/          ` ,              `     ` ,  ,    \_/ ?   ;    )   `.
-# :;:            `                      `  ` ,     uu`--(___(    ~:
-# :::          , ,  ,            ,   ;     , `  ,-'      \~(  ~   :
-# ||:          ` `  `         ,  ` ,'    ( ` _,-          \ \_   ~:
-# :|`.        , ,  ,          `_   ;       ) );            \__>   :
-# |:  : ;     ` `  ` ;  __,--~~ `-(         ( |              `.  ~|
-# :|  :         ` __,--'           :  ()    : :               |~  ;
-# |;  |  `     ,-'    ;             :  )(   | `.         /(   `. ~|
-# ::  :   ~  _/;     ;               |   )  :  :        ; /    ;~ ;
-# {}  ;     /  :   ~ :               :      ; ,;        : `._,-  ,
-# {} /~    /   ;    ;                 : ,  |  `;         `.___,-'
-#   ;~    ;    ;  ~ `.                | `  )   ;
-#   :`    \    `;~   \                ;~   `-, `-.     Targon
-#   `.__OOO;    `;_OOO;               )_____OO;_(O)
-#    ~~~~~~       ~~~~                ~~~~~~~~ ~~~~ ''''''
-
-#        ,,,,,,,,,,,,,,,
-#     ,(((((((((())))))))),
-#   ,((((((((((()))))))))))),
-#  ,(((((((((\\\|///))))))))),
-# ,((((((((((///|\\\)))))))))),
-# ((((((((//////^\\\\\\))))))))
-# ((((((' .-""-   -""-. '))))))
-# (((((  `\.-.     .-./`  )))))
-# ((((( -=(0) )   (0) )=- )))))
-# '((((   /'-'     '-'\   ))))'
-#  ((((\   _,   A  ,_    /))))
-#  '((((\    \     /    /))))'
-#    '((('.   `-o-'   .')))'
-# jgs      '-.,___,.-'
