@@ -7,12 +7,14 @@ from sensor_msgs.msg import LaserScan
 from enum import Enum 
 import numpy as np 
 import random 
+from nav_msgs.msg import Odometry
 
 
 class Walk(Node):
     
     def __init__(self):
         super().__init__('Track')
+        self.isStart = False 
         self.startTime = time.time()
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.subscription = self.create_subscription( 
@@ -21,8 +23,31 @@ class Walk(Node):
             self.sensor_callback, 
             10
         )
+        self.subscription = self.create_subscription(
+            Odometry,
+            '/ground_truth',
+            self.listener_callback,
+        10)
 
         self.mode = "FULL"
+
+    def listener_callback(self, msg):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+
+        if self.isStart == False:
+            self.startPos = [x, y]
+            self.isStart = True
+
+        dx = x - self.startPos[0]
+        dy = y - self.startPos[1]
+        distanceTraveled = math.sqrt(dx * dx + dy * dy)
+
+        curTime = time.time()
+        elapsed = curTime - self.startTime
+
+        print("Elapsed Time: " + str(elapsed))
+        print("Distance: " + str(distanceTraveled))
         
     # Scan the front 180 degrees of lidar range and calculate angular velocity needed to go in the direction of more openness
     def scan_area(self, laser_data):
@@ -49,13 +74,13 @@ class Walk(Node):
         
     def check_front_cone_clear(self, laser_ranges, middle_index):
         # Check 20-degree cone in the center (10 degrees on each side)
-        cone_start = middle_index - 10
-        cone_end = middle_index + 10
+        cone_start = middle_index - 20
+        cone_end = middle_index + 20
         cone_data = laser_ranges[cone_start:cone_end]
         
         # Check if there's clear space (2 meters) in the front cone
-        clear_distance = 2.0  # meters
-        max_distance_in_cone = np.max(cone_data)
+        clear_distance = 1.5  # meters
+        max_distance_in_cone = np.mean(cone_data)
         
         # Return True if there's at least one clear path (2+ meters) in the cone
         # This allows us to detect doors even if part of the cone faces a wall
@@ -63,13 +88,13 @@ class Walk(Node):
         
     def calculate_cone_velocity(self, laser_ranges, middle_index):
         # Get 20-degree cone data (10 degrees on each side of center)
-        cone_start = middle_index - 10
-        cone_end = middle_index + 10
+        cone_start = middle_index - 45
+        cone_end = middle_index + 45
         cone_data = laser_ranges[cone_start:cone_end]
         
         # Split cone into left and right halves (10 measurements each)
-        left_cone = cone_data[:10]    # Left 10 degrees of cone
-        right_cone = cone_data[10:]   # Right 10 degrees of cone
+        left_cone = cone_data[:45]    # Left 10 degrees of cone
+        right_cone = cone_data[45:]   # Right 10 degrees of cone
         
         # Calculate average distance for each half
         left_openness = np.mean(left_cone)
@@ -98,9 +123,9 @@ class Walk(Node):
         
         # Slow down as we get closer to obstacles
         if min_distance_in_cone < 1.0:
-            linear_velocity = 0.1  # Very slow when close to obstacles
+            linear_velocity = 0.3  # Very slow when close to obstacles
         elif min_distance_in_cone < 2.0:
-            linear_velocity = 0.3  # Moderate speed when approaching obstacles
+            linear_velocity = 0.5  # Moderate speed when approaching obstacles
         else:
             linear_velocity = base_linear_vel  # Full speed when clear
             
@@ -138,6 +163,7 @@ class Walk(Node):
         # Adjust speed based on obstacles
         if min_distance < 0.5:
             linear_velocity = 0.0  # Stop if too close to obstacles
+            angular_velocity = 1.0
         elif min_distance < 1.0:
             linear_velocity = 0.2  # Very slow when close
         elif min_distance < 2.0:
