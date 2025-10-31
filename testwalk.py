@@ -74,12 +74,12 @@ class Walk(Node):
         
     def check_front_cone_clear(self, laser_ranges, middle_index):
         # Check 20-degree cone in the center (10 degrees on each side)
-        cone_start = middle_index - 20
-        cone_end = middle_index + 20
+        cone_start = middle_index - 60
+        cone_end = middle_index + 60
         cone_data = laser_ranges[cone_start:cone_end]
         
         # Check if there's clear space (2 meters) in the front cone
-        clear_distance = 1.5  # meters
+        clear_distance = 2.0  # meters
         max_distance_in_cone = np.mean(cone_data)
         
         # Return True if there's at least one clear path (2+ meters) in the cone
@@ -104,9 +104,9 @@ class Walk(Node):
         bias = right_openness - left_openness
         
         # Angular velocity calculation (fine adjustments)
-        max_angular_vel = 0.2  # Much smaller than 180-degree version
+        max_angular_vel = 0.4  # Much smaller than 180-degree version
         scale_factor = 0.1     # Much more gentle for fine adjustments
-        angular_velocity = bias * scale_factor
+        angular_velocity = bias * scale_factor 
         
         # Limit the angular velocity for fine adjustments
         if angular_velocity > max_angular_vel:
@@ -126,8 +126,10 @@ class Walk(Node):
             linear_velocity = 0.3  # Very slow when close to obstacles
         elif min_distance_in_cone < 2.0:
             linear_velocity = 0.5  # Moderate speed when approaching obstacles
+            angular_velocity = bias * random.betavariate(0.3, 0.3)  
         else:
             linear_velocity = base_linear_vel  # Full speed when clear
+            angular_velocity = bias * random.betavariate(0.3, 0.3)  
             
         return angular_velocity, linear_velocity
         
@@ -161,7 +163,7 @@ class Walk(Node):
         base_linear_vel = 0.8  # Base speed for 180-degree mode
         
         # Adjust speed based on obstacles
-        if min_distance < 0.5:
+        if min_distance < 0.3:
             linear_velocity = 0.0  # Stop if too close to obstacles
             angular_velocity = 1.0
         elif min_distance < 1.0:
