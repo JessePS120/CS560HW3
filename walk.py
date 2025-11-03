@@ -1,3 +1,9 @@
+# HW3
+# Wesley Junkins
+# Jesse Seidel
+# Austin Smith
+# Chanakya Setty
+
 import rclpy
 from rclpy.node import Node
 import time
@@ -7,7 +13,6 @@ from sensor_msgs.msg import LaserScan
 from enum import Enum 
 import numpy as np 
 import random 
-from nav_msgs.msg import Odometry
 
 
 class Walk(Node):
@@ -23,31 +28,8 @@ class Walk(Node):
             self.sensor_callback, 
             10
         )
-        self.subscription = self.create_subscription(
-            Odometry,
-            '/ground_truth',
-            self.listener_callback,
-        10)
 
         self.mode = "FULL"
-
-    def listener_callback(self, msg):
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-
-        if self.isStart == False:
-            self.startPos = [x, y]
-            self.isStart = True
-
-        dx = x - self.startPos[0]
-        dy = y - self.startPos[1]
-        distanceTraveled = math.sqrt(dx * dx + dy * dy)
-
-        curTime = time.time()
-        elapsed = curTime - self.startTime
-
-        print("Elapsed Time: " + str(elapsed))
-        print("Distance: " + str(distanceTraveled))
         
     # Scan the front 180 degrees of lidar range and calculate angular velocity needed to go in the direction of more openness
     def scan_area(self, laser_data):
@@ -62,7 +44,7 @@ class Walk(Node):
         cone_clear = self.check_front_cone_clear(laser_ranges, middle_index)
         
         if cone_clear:
-            # Use 20-degree cone for fine adjustments
+            # Use 70-degree cone for fine adjustments
             self.mode = "CONE"
             angular_velocity, linear_velocity = self.calculate_cone_velocity(laser_ranges, middle_index)
         else:
@@ -73,7 +55,7 @@ class Walk(Node):
         return angular_velocity, linear_velocity
         
     def check_front_cone_clear(self, laser_ranges, middle_index):
-        # Check 20-degree cone in the center (10 degrees on each side)
+        # Check 70-degree cone in the center (35 degrees on each side)
         cone_start = middle_index - 35
         cone_end = middle_index + 35
         cone_data = laser_ranges[cone_start:cone_end]
@@ -87,14 +69,14 @@ class Walk(Node):
         return max_distance_in_cone > clear_distance
         
     def calculate_cone_velocity(self, laser_ranges, middle_index):
-        # Get 20-degree cone data (10 degrees on each side of center)
+        # Get 90-degree cone data (45 degrees on each side of center)
         cone_start = middle_index - 45
         cone_end = middle_index + 45
         cone_data = laser_ranges[cone_start:cone_end]
         
-        # Split cone into left and right halves (10 measurements each)
-        left_cone = cone_data[:45]    # Left 10 degrees of cone
-        right_cone = cone_data[45:]   # Right 10 degrees of cone
+        # Split cone into left and right halves (45 measurements each)
+        left_cone = cone_data[:45]
+        right_cone = cone_data[45:]
         
         # Calculate average distance for each half
         left_openness = np.mean(left_cone)
@@ -126,18 +108,18 @@ class Walk(Node):
         
         # Slow down as we get closer to obstacles
         if min_distance_in_cone < 1.0:
-            linear_velocity = 0.3  # Very slow when close to obstacles
+            linear_velocity = 0.3
         elif min_distance_in_cone < 2.0:
-            linear_velocity = 0.5  # Moderate speed when approaching obstacles
+            linear_velocity = 0.5
         else:
-            linear_velocity = base_linear_vel  # Full speed when clear
+            linear_velocity = base_linear_vel
             
         return angular_velocity, linear_velocity
         
     def calculate_180_degree_velocity(self, front_180_data):
         # Split the 180 degrees into left and right halves
-        left_half = front_180_data[:90]    # First 90 measurements (left side)
-        right_half = front_180_data[90:]   # Last 90 measurements (right side)
+        left_half = front_180_data[:90]
+        right_half = front_180_data[90:]
         
         # Calculate average distance for each half (more distance = more openness)
         left_openness = np.mean(left_half)
@@ -165,14 +147,14 @@ class Walk(Node):
         
         # Adjust speed based on obstacles
         if min_distance < 0.4:
-            linear_velocity = 0.0  # Stop if too close to obstacles
+            linear_velocity = 0.0
             angular_velocity = 1.0
         elif min_distance < 1.0:
-            linear_velocity = 0.2  # Very slow when close
+            linear_velocity = 0.2
         elif min_distance < 2.0:
-            linear_velocity = 0.5  # Moderate speed
+            linear_velocity = 0.5
         else:
-            linear_velocity = base_linear_vel  # Full speed when clear
+            linear_velocity = base_linear_vel
             
         return angular_velocity, linear_velocity
 
@@ -188,7 +170,7 @@ class Walk(Node):
         # Publish the twist command
         self.publisher.publish(twist_msg)
         
-        # Optional: Print debug information
+        # Print debug information
         print(f"Mode: {self.mode} \t | \t Linear: {linear_velocity:.2f} \t | \t Angular: {angular_velocity:.2f} \t | \t Time: {time.time() - self.startTime:.2f}")
 
 def main(args=None):
