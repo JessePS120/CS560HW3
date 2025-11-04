@@ -14,6 +14,8 @@ from enum import Enum
 import numpy as np 
 import random 
 
+#Set to true to enable debugging via print().
+DEBUG = False 
 
 class Walk(Node):
     
@@ -171,7 +173,8 @@ class Walk(Node):
         self.publisher.publish(twist_msg)
         
         # Print debug information
-        print(f"Mode: {self.mode} \t | \t Linear: {linear_velocity:.2f} \t | \t Angular: {angular_velocity:.2f} \t | \t Time: {time.time() - self.startTime:.2f}")
+        if DEBUG: 
+        	print(f"Mode: {self.mode} \t | \t Linear: {linear_velocity:.2f} \t | \t Angular: {angular_velocity:.2f} \t | \t Time: {time.time() - self.startTime:.2f}")
 
 def main(args=None):
     rclpy.init(args=args)
